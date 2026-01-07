@@ -1,0 +1,31 @@
+# /etc/containers/systemd/pulsar.container
+
+[Unit]
+Description=Apache Pulsar 4.0.0 (Standalone)
+After=network-online.target
+
+[Container]
+# 1. Image & User
+Image=localhost/pulsar:4.0.0
+User=1002
+Group=1002
+
+# 2. Storage (Tiered Architecture)
+# We map the standard data directory.
+# Standalone uses 'standalone' subfolder, but we mount the root 'data'
+Volume=pulsar-data.volume:/usr/local/pulsar/data
+
+# 3. Network & Ports
+# 6650: Binary Protocol (Clients)
+# 8080: HTTP Protocol (Admin API & WebSocket)
+PublishPort=6650:6650
+PublishPort=8080:8080
+
+# 4. Environment
+Environment=PULSAR_MEM="-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g"
+Environment=PULSAR_PREFIX_advertisedAddress=localhost
+Environment=PULSAR_GC="-XX:+UseG1GC -XX:MaxGCPauseMillis=10"
+
+[Service]
+Restart=always
+TimeoutStartSec=60

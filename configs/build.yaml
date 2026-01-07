@@ -1,0 +1,27 @@
+ProjectName: "apache-pulsar-setup"
+BaseImage: "registry.opensuse.org/opensuse/leap:16.0"
+
+Buildah:
+  Path: "buildah"
+
+ApachePulsar:
+  Version: "4.0.0"
+  SourceUrl: "https://archive.apache.org/dist/pulsar/pulsar-4.0.0/apache-pulsar-4.0.0-bin.tar.gz"
+  Prefix: "/usr/local/pulsar"
+  Build:
+    Dependencies: [
+      # Core Build Tools
+      "tar", "curl", "findutils", "gzip"
+    ]
+  Runtime:
+    Dependencies: [ "shadow", "hostname", "gzip", "findutils", "which" ]
+    Resources: "resources"
+    Uid: 1002 # pulsar user id
+    Gid: 1002 # pulsar group id
+    PulsarGc: [ "-XX:+UseG1GC" , "-XX:MaxGCPauseMillis=10" ]
+    Java:
+      Jre:
+        Major: "21"
+        Minor: "0.9"
+        Build: "10"
+
