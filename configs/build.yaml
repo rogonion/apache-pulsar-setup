@@ -24,4 +24,22 @@ ApachePulsar:
         Major: "21"
         Minor: "0.9"
         Build: "10"
+    Ports:
+      - 6650 # Broker: Pulsar Binary
+      - 8080 # Broker: Admin API/WebSocket
+      - 8000 # Broker: Metrics
+      - 3181 # BookKeeper Binary
+      - 2181 # Zookeeper
+
+PostgresSink:
+  Current: "4.0.0"
+  ConfigPath: "/usr/local/pulsar/postgres-sink.yaml"
+  BrokerUrl: "pulsar://pulsar_broker:6650"
+  Versions:
+    "4.0.0":
+      SourceUrl: "https://archive.apache.org/dist/pulsar/pulsar-4.0.0/connectors/pulsar-io-jdbc-postgres-4.0.0.nar"
+      Dependencies: [ "shadow", "curl", "gzip", "findutils", "which" ]
+      Uid: 1002 # pulsar user id
+      Gid: 1002 # pulsar group id
+
 

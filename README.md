@@ -1,6 +1,8 @@
 # apache-pulsar-setup
 
-A utility for creating a customized, rootless [Apache Pulsar](https://pulsar.apache.org/) container image. This project builds a "lean" image based on the official binary distribution, decoupled from the heavy JDK layers found in standard images.
+A utility for creating a customized, rootless [Apache Pulsar](https://pulsar.apache.org/) container image. This project
+builds a "lean" image based on the official binary distribution, decoupled from the heavy JDK layers found in standard
+images.
 
 **Base Image:** [openSUSE Leap 16.0](https://registry.opensuse.org/cgi-bin/cooverview)  
 **Apache Pulsar Version:** 4.0.0 (Official Binary Release)
@@ -96,41 +98,205 @@ $TASKFILE_BINARY run -- containers runtime build
 
 Run the built container using `podman`:
 
-```shell
-#!/bin/bash
+- Temporary container, does not work well between restarts with persistence.
+    ```shell
+    #!/bin/bash
+    
+    CONTAINER="pulsar4.0.0"
+    NETWORK="tumbleweed"
+    NETWORK_ALIAS="pulsar-standalone"
+    CONTAINER_UID=1002
+    CONTAINER_GID=1002
+    
+    # Ports: 6650 (Binary), 8080 (HTTP/Admin)
+    PORT_BINARY=6650
+    PORT_HTTP=8080
+    
+    IMAGE="localhost/apache-pulsar:4.0.0"
+    
+    podman run -d \
+            --name $CONTAINER \
+            --network $NETWORK \
+            --network-alias $NETWORK_ALIAS \
+            --user $CONTAINER_UID:$CONTAINER_GID \
+            -p $PORT_BINARY:6650 \
+            -p $PORT_HTTP:8080 \
+            -e "PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g" \
+            -e "PULSAR_GC=-XX:+UseG1GC -XX:MaxGCPauseMillis=10" \
+            -e "PULSAR_PREFIX_advertisedAddress=localhost" \
+            $IMAGE
+    ```
+- 3 separate nodes (zookeeper->bookie->broker) for persistence:
 
-CONTAINER="pulsar4.0.0"
-NETWORK="tumbleweed"
-NETWORK_ALIAS="pulsar-standalone"
-CONTAINER_UID=1002
-CONTAINER_GID=1002
+  You can find the pre-populated configuration files inside the runtime image at `$PULSAR_HOME/conf/`. Extract them (
+  zookkeeper.conf, bookkeeper.conf, and broker.conf) to the directory where your script for running the container shall
+  be.
 
-# Ports: 6650 (Binary), 8080 (HTTP/Admin)
-PORT_BINARY=6650
-PORT_HTTP=8080
+  For zookeeper, nothing much needs to change but for `bookie` and `brooker` some snippets need to be edited in the
+  config files so that they can talk to each other as well as other services can talk to them...
 
-VOLUME="pulsar-data"
-IMAGE="localhost/apache-pulsar:4.0.0"
+  `bookkeeper.conf`:
+  ```toml
+  # CONNECTIVITY
+  # 1. The Port: Must be 3181 (Not 6650, that is for Brokers)
+  bookiePort=3181
+  
+  # 2. The Identity: This MUST match your Podman '--network-alias' for the bookie.
+  # If this is wrong, the Broker will try to connect to a random container ID and fail.
+  advertisedAddress=pulsar_bookie
+  
+  # 3. Security: Allow binding to loopback in containers
+  allowLoopback=true
+  
+  # METADATA (MUST MATCH INIT COMMAND)
+  # 4. The Chroot: Notice the '/ledgers' at the end.
+  # If this is missing, you get "BookKeeper cluster not initialized"
+  metadataServiceUri=metadata-store:zk:pulsar_zookeeper:2181/ledgers
+  
+  # 5. Legacy Fallback: Keep this in sync with the URI above
+  zkServers=pulsar_zookeeper:2181/ledgers
+  ```
 
-# Create volume if it doesn't exist
-podman volume exists $VOLUME || podman volume create $VOLUME
+  `broker.conf`:
+  ```toml
+  # CLUSTER IDENTITY (MUST MATCH INIT COMMAND)
+  # 1. Cluster Name: If this doesn't match, the broker will refuse to start.
+  clusterName=tumbleweed
+  
+  # 2. Global ZK: Brokers use the ROOT for tenant/namespace configuration.
+  # (Note: No '/ledgers' here usually, unless you chrooted the whole cluster)
+  zookeeperServers=pulsar_zookeeper:2181
+  configurationStoreServers=pulsar_zookeeper:2181
+  
+  # 3. Bookie Discovery: Brokers look for Bookies here.
+  # MUST match the Bookie's 'metadataServiceUri'
+  bookkeeperMetadataServiceUri=metadata-store:zk:pulsar_zookeeper:2181/ledgers
+  
+  # NETWORK (The Dual Listener)
+  # 4. Access: Define 'internal' (for Trino/Bookie) and 'external' (for You/Go)
+  advertisedListeners=internal:pulsar://broker:6650,external:pulsar://localhost:6650
+  
+  # 5. Routing: Tell the broker to use 'internal' for talking to other components
+  internalListenerName=internal
+  
+  # STORAGE QUORUMS (Single Node Mode)
+  # 6. Safety Checks: Since you only have 1 Bookie, you must force these to 1.
+  # Defaults are 2 or 3, which will cause the Broker to crash loop.
+  managedLedgerDefaultEnsembleSize=1
+  managedLedgerDefaultWriteQuorum=1
+  managedLedgerDefaultAckQuorum=1
+  ```
+  Once the configuration files are set, you can run the images (zookeeeper->init cluster->bookkeeper->broker):
 
-# Ensure permissions match the container user (1002)
-podman unshare chown -R $CONTAINER_UID:$CONTAINER_GID $(podman volume inspect $VOLUME --format '{{.Mountpoint}}')
+  ```shell
+  # 1. Start zookeeper
 
-podman run -d \
-        --name $CONTAINER \
-        --network $NETWORK \
-        --network-alias $NETWORK_ALIAS \
-        --user $CONTAINER_UID:$CONTAINER_GID \
-        -p $PORT_BINARY:6650 \
-        -p $PORT_HTTP:8080 \
-        -v $VOLUME:/usr/local/pulsar/data \
-        -e "PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g" \
-        -e "PULSAR_GC=-XX:+UseG1GC -XX:MaxGCPauseMillis=10" \
-        -e "PULSAR_PREFIX_advertisedAddress=localhost" \
-        $IMAGE
-```
+  CONTAINER="pulsar_zookeeper"
+  NETWORK="tumbleweed"
+  NETWORK_ALIAS="pulsar_zookeeper"
+  CONTAINER_UID=1002
+  CONTAINER_GID=1002
+  VOLUME="pulsar_zookeeper"
+  SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+  CONFIG_FILE=$SCRIPT_DIR/zookeeper.conf # Custom configuration file (COPY FROM runtime image)
+  IMAGE="localhost/apache-pulsar:4.0.0"
+  CMD="pulsar zookeeper"
+  
+  # PORT: 2181
+  
+  podman volume exists $VOLUME || podman volume create $VOLUME
+  
+  podman unshare chown -R $CONTAINER_UID:$CONTAINER_GID $(podman volume inspect $VOLUME --format '{{.Mountpoint}}')
+  
+  
+  podman run -d \
+    --name $CONTAINER \
+    --network $NETWORK \
+    --network-alias $NETWORK_ALIAS \
+    --user $CONTAINER_UID:$CONTAINER_GID \
+    -v $VOLUME:/usr/local/pulsar/data \
+    -v $CONFIG_FILE:/usr/local/pulsar/conf/zookeeper.conf:ro,Z \
+    -e "PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g" \
+    -e "PULSAR_GC=-XX:+UseG1GC -XX:MaxGCPauseMillis=10" \
+    $IMAGE \
+    $CMD
+  
+  # 2. Initialize clust metadata (only once)
+  NETWORK="tumbleweed"
+  CLUSTER_NAME="tumbleweed"
+  ZOOKEEPER="pulsar_zookeeper:2181"
+  BROKER_WEB_URL="http://pulsar_zookeeper:8080"
+  BROKER_SERVICE_URL="pulsar_broker:6650"
+  IMAGE="localhost/apache-pulsar:4.0.0"
+  
+  podman run --rm \
+  --network $NETWORK \
+  $IMAGE \
+  pulsar initialize-cluster-metadata \
+    --cluster $CLUSTER_NAME \
+    --zookeeper $ZOOKEEPER/ledgers \
+    --configuration-store $ZOOKEEPER \
+    --web-service-url $BROKER_WEB_URL \
+    --broker-service-url $BROKER_SERVICE_URL
+  
+  # 3. Start bookie
+  CONTAINER="pulsar_bookie"
+  NETWORK="tumbleweed"
+  NETWORK_ALIAS="pulsar_bookie"
+  CONTAINER_UID=1002
+  CONTAINER_GID=1002
+  VOLUME="pulsar_bookie"
+  SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+  CONFIG_FILE=$SCRIPT_DIR/bookkeeper.conf # Custom configuration file
+  IMAGE="localhost/apache-pulsar:4.0.0"
+  CMD="pulsar bookie"
+  
+  podman volume exists $VOLUME || podman volume create $VOLUME
+  
+  podman unshare chown -R $CONTAINER_UID:$CONTAINER_GID $(podman volume inspect $VOLUME --format '{{.Mountpoint}}')
+  
+  
+  podman run -d \
+    --name $CONTAINER \
+    --network $NETWORK \
+    --network-alias $NETWORK_ALIAS \
+    --user $CONTAINER_UID:$CONTAINER_GID \
+    -v $VOLUME:/usr/local/pulsar/data \
+    -v $CONFIG_FILE:/usr/local/pulsar/conf/bookkeeper.conf:ro,Z \
+    -e "PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g" \
+    -e "PULSAR_GC=-XX:+UseG1GC -XX:MaxGCPauseMillis=10" \
+    $IMAGE \
+    $CMD
+  
+  # 4. Start broker
+  CONTAINER="pulsar_broker"
+  NETWORK="tumbleweed"
+  NETWORK_ALIAS="pulsar_broker"
+  CONTAINER_UID=1002
+  CONTAINER_GID=1002
+  VOLUME="pulsar_broker"
+  SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+  CONFIG_FILE=$SCRIPT_DIR/broker.conf # Custom configuration file
+  IMAGE="localhost/apache-pulsar:4.0.0"
+  CMD="pulsar broker"
+  
+  podman volume exists $VOLUME || podman volume create $VOLUME
+  
+  podman unshare chown -R $CONTAINER_UID:$CONTAINER_GID $(podman volume inspect $VOLUME --format '{{.Mountpoint}}')
+  
+  
+  podman run -d \
+    --name $CONTAINER \
+    --network $NETWORK \
+    --network-alias $NETWORK_ALIAS \
+    --user $CONTAINER_UID:$CONTAINER_GID \
+    -v $VOLUME:/usr/local/pulsar/data \
+    -v $CONFIG_FILE:/usr/local/pulsar/conf/broker.conf:ro,Z \
+    -e "PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=1g" \
+    -e "PULSAR_GC=-XX:+UseG1GC -XX:MaxGCPauseMillis=10" \
+    $IMAGE \
+    $CMD
+  ```
 
 ## Application Container Image Features
 
@@ -141,7 +307,6 @@ podman run -d \
 ### Volumes
 
 <table> <thead> <th>Path</th> <th>Purpose</th> </thead> <tbody> <tr> <td><code>/usr/local/pulsar/data</code></td> <td><strong>Data Directory.</strong> Stores BookKeeper ledgers (messages) and ZooKeeper snapshots (metadata). <strong>Critical:</strong> Ensure you mount a volume here to persist data across restarts.</td> </tr> <tr> <td><code>/usr/local/pulsar/logs</code></td> <td><strong>Logs Directory.</strong> Stores Garbage Collection logs and server logs. Optional mount.</td> </tr> </tbody> </table>
-
 
 ### Environment variables
 

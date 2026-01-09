@@ -20,6 +20,7 @@ class RuntimeConfig(BaseModel):
     Gid: int = 1002
     PulsarGc: List[str] = Field(default_factory=list)
     Java: JavaJreConfig = Field(default_factory=JavaJreConfig)
+    Ports: List[int] = Field(default_factory=list)
 
 
 class BuildConfig(BaseModel):
@@ -33,3 +34,4 @@ class ApachePulsarConfig(BaseModel):
     Prefix: str = '/usr/local/pulsar'
     Build: BuildConfig = Field(default_factory=BuildConfig)
     Runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+

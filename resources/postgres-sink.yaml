@@ -1,0 +1,10 @@
+tenant: "public"
+namespace: "default"
+name: "my-postgres-sink"
+topicsPattern: "persistent://public/default/.*"
+archive: "connectors/pulsar-io-jdbc-postgres.nar"
+configs:
+  jdbcUrl: "jdbc:postgresql://postgres:5432/postgres"
+  tableName: "public.event_journal"
+  userName: "postgres"
+  password: "password"
